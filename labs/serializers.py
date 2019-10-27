@@ -1,7 +1,8 @@
 from django.contrib.auth.models import User
 from rest_framework import serializers
 
-from .models import Topic, Track, Challenge, TopicTrackMapping, TrackChallengeMapping, ContainerData
+from .models import Topic, Track, Challenge, TopicTrackMapping, TrackChallengeMapping, ContainerData, \
+    SubmittedAssignments
 
 
 class TopicSerializer(serializers.ModelSerializer):
@@ -38,4 +39,7 @@ class ContainerDataSerializer(serializers.ModelSerializer):
         model = ContainerData
         fields = '__all__'
 
-
+class SubmittedAssignmentsSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = SubmittedAssignments
+        fields = '__all__'

@@ -59,9 +59,6 @@ def build_image(container_name, installation_script, trackid):
                 }
             )
             print(line)
-
-
-        #image, generator = client.images.build(path=dirpath, nocache=True)
     except docker.errors.BuildError as e:
         print(e.msg)
         for line in e.build_log:
@@ -77,37 +74,43 @@ def get_containers_idle(idletime=None):
         return  ContainerData.objects.filter()
 
 
-def remove_idle_containers():
-    containers_data = get_containers_idle(60)
+def remove_idle_containers(timegap=None):
+    containers_data = get_containers_idle(timegap)
     for container_data in containers_data:
-        try:
-            container = client.containers.get(container_data.container_id)
-            container.remove(force=True)
-        except docker.errors.NotFound:
-            pass
-        if container_data.container_temp:
-            container_volume_dir = os.path.join(os.getcwd(),'public', str(container_data.track_id_id), str(container_data.course_id), str(container_data.student_id))
-            print(container_volume_dir)
+        if not container_data.container_colab_file:
             try:
-                shutil.rmtree(container_volume_dir)
-            except FileNotFoundError as e:
-                print(e)
-        print(container_data.container_ports)
-        container_ports = list(container_data.container_ports)
+                container = client.containers.get(container_data.container_id)
+                container.remove(force=True)
+            except docker.errors.NotFound:
+                pass
+            if container_data.container_temp:
+                container_volume_dir = os.path.join(os.getcwd(),'public', str(container_data.track_id_id), str(container_data.course_id), str(container_data.student_id))
+                print(container_volume_dir)
+                try:
+                    shutil.rmtree(container_volume_dir)
+                except FileNotFoundError as e:
+                    print(e)
+            print(container_data.container_ports)
+            container_ports = list(container_data.container_ports)
 
-        for port in container_ports:
-            delete_endpoint = str(container_data.container_id[:10]) + "-" + str(port) + CONTAINER_HOST
-            print(delete_endpoint)
-            headers = {'Content-type': 'application/json'}
-            r = requests.delete(url=CERYX_API_ENDPOINT+delete_endpoint, headers=headers)
-            print(r)
-            print(r.text)
-    containers_data.delete()
+            for port in container_ports:
+                delete_endpoint = str(container_data.container_id[:10]) + "-" + str(port) + CONTAINER_HOST
+                print(delete_endpoint)
+                headers = {'Content-type': 'application/json'}
+                r = requests.delete(url=CERYX_API_ENDPOINT+delete_endpoint, headers=headers)
+                print(r)
+                print(r.text)
+            container_data.delete()
+        else:
+            if container_data.container_temp:
+                #To be implemented, make sure the container is 1 day old and delete even the colab file stored
+                pass
+
 
 
 @periodic_task(run_every=(crontab(minute='*/10')), name="remove_idle_containers", ignore_result=True)
 def remove_idle_containers_task():
-    remove_idle_containers()
+    remove_idle_containers(60)
 
 
 

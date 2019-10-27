@@ -71,6 +71,7 @@ MIDDLEWARE = [
 
 CORS_ORIGIN_ALLOW_ALL = True
 
+
 ROOT_URLCONF = 'codelabsback.urls'
 
 TEMPLATES = [
