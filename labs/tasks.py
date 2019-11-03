@@ -1,5 +1,6 @@
 import os
 import shutil
+import stat
 import tempfile
 from datetime import timedelta
 
@@ -12,8 +13,8 @@ from celery.schedules import crontab
 from celery.task import task, periodic_task
 from django.conf import settings
 from docker import APIClient
-
-from labs.models import ContainerData
+from channels.layers import get_channel_layer
+from labs.models import ContainerData, Track
 
 import docker
 
@@ -27,12 +28,13 @@ def build_image(container_name, installation_script, trackid):
     command1 = 'FROM ' + container_name + '\n' + 'COPY installation_script.sh installation_script.sh\n RUN chmod 700 ./installation_script.sh \n RUN cat ./installation_script.sh \n RUN /bin/bash ./installation_script.sh\n'
     dirpath = tempfile.mkdtemp()
     print(dirpath)
-    installation_file = open(dirpath + "/installation_script.sh", "w+", newline='\n')
+    installation_file_path = dirpath + "/installation_script.sh"
+    installation_file = open(installation_file_path, "w+", newline='\n')
     installation_script = installation_script.replace('\r\n', '\n')
     print(print(repr(installation_script)))
     installation_file.write(installation_script)
     installation_file.close()
-
+    os.chmod(installation_file_path, 0o777)
     docker_file = open(dirpath + "/Dockerfile", "w+", newline='\n')
     docker_file.write(command1)
     docker_file.close()
@@ -40,7 +42,7 @@ def build_image(container_name, installation_script, trackid):
     try:
         for line in cli.build(path=dirpath, rm=True, nocache=True, decode=True, tag="nikhilrayaprolu/build_"+str(trackid)):
             # Send message to room group
-            channel_layer = channels.layers.get_channel_layer()
+            channel_layer = get_channel_layer()
             async_to_sync(channel_layer.group_send)(
                 'build_'+str(trackid),
                     {
@@ -50,7 +52,7 @@ def build_image(container_name, installation_script, trackid):
                 )
             print(line)
         for line in cli.push("nikhilrayaprolu/build_"+str(trackid), stream=True, decode=True):
-            channel_layer = channels.layers.get_channel_layer()
+            channel_layer = get_channel_layer()
             async_to_sync(channel_layer.group_send)(
                 'build_' + str(trackid),
                 {
@@ -59,6 +61,10 @@ def build_image(container_name, installation_script, trackid):
                 }
             )
             print(line)
+        current_track = Track.objects.get(id=trackid)
+        current_track.final_image = 'nikhilrayaprolu/build_"+str(trackid)'
+        current_track.save(update_fields=['final_image'])
+
     except docker.errors.BuildError as e:
         print(e.msg)
         for line in e.build_log:

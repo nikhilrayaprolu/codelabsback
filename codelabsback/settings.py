@@ -165,6 +165,7 @@ LTI_TOOL_CONFIGURATION = {
     'title': 'Get Code Labs',
     'description': 'Get Code Labs, the virtual labs for computer science',
     'launch_url': 'lti/',
+    'assignment_url': 'http://localhost:4200/pages/labrun/',
     'assignments': {
         'test': 'http://localhost:4200/pages/labrun/29',
     },
@@ -177,6 +178,10 @@ PYLTI_CONFIG = {
         }
     }
 }
+X_FRAME_OPTIONS = 'ALLOWALL'
+
+XS_SHARING_ALLOWED_METHODS = ['POST','GET','OPTIONS', 'PUT', 'DELETE']
+
 LANGUAGE_CODE = 'en-us'
 
 TIME_ZONE = 'UTC'
@@ -190,7 +195,8 @@ USE_TZ = True
 
 # Static files (CSS, JavaScript, Images)
 # https://docs.djangoproject.com/en/2.2/howto/static-files/
-
+MEDIA_ROOT  = os.path.join(BASE_DIR, 'public2')
+MEDIA_URL = '/media/'
 STATIC_URL = '/static/'
 
 # CELERY STUFF

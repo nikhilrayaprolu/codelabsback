@@ -18,10 +18,13 @@ urlpatterns = [
     path('submitlab/<int:trackid>/<str:courseid>/<str:studentid>', views.SubmitLab.as_view(), name='submitlab'),
     path('snapshotcontainer/<str:containerid>/<int:trackid>', views.SnapShotContainer.as_view(), name='snapshotcontainer'),
     path('fileupload/<int:trackid>/<str:filename>', views.FileUploadView.as_view()),
+    path('fileupload/<int:trackid>/<str:filename>/<str:courseid>/<str:studentid>', views.FileUploadView.as_view()),
+    path('filedownload/<int:trackid>/<str:courseid>/<str:studentid>', views.FileDownload.as_view()),
+    path('resetfile/<int:trackid>/<str:courseid>/<str:studentid>', views.ResetFolder.as_view()),
     path('startiframe/<str:containerid>/<int:port>', views.StartIframe.as_view()),
     path('evaluatecoursetrack/<str:courseid>/<int:trackid>', views.EvaluatorTrackCourseStats.as_view()),
     path('evaluatecourse/<str:courseid>', views.EvaluatorCourseStats.as_view()),
     path('evaluate/', views.EvaluatorStats.as_view()),
     path('submissions/<int:submissionid>', views.SubmissionsView.as_view()),
-    path('gradesubmissions/<int:submissionid>/<int:grade>', views.SubmissionsGrader.as_view())
+    path('gradesubmissions/<int:submissionid>/<str:grade>', views.SubmissionsGrader.as_view())
 ]

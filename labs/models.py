@@ -67,6 +67,9 @@ class ContainerData(models.Model):
     container_last_ping_time = models.DateTimeField(auto_now_add=True, blank=True, null=True)
     container_colab_file = models.CharField(max_length=100, blank=True, null=True)
     container_colab_webview = models.CharField(max_length=200, blank=True, null=True)
+    class Meta:
+        unique_together = (('track_id', 'course_id', 'student_id'),)
+
 
 #Though this model is named Submitted Assignments this is currently used for all kinds of stats for the track
 class SubmittedAssignments(models.Model):
@@ -76,9 +79,12 @@ class SubmittedAssignments(models.Model):
     student_id = models.CharField(max_length=100)
     submit_status = models.CharField(max_length=100)
     container_temp = models.BooleanField(default=True, blank=True, null=True)
-    grade = models.IntegerField(default=0, blank=True, null=True)
+    grade = models.FloatField(null=True, blank=True, default=0)
     graded = models.BooleanField(default=False, blank=True, null=True)
     container_colab_file = models.CharField(max_length=100, blank=True, null=True)
     container_colab_webview = models.CharField(max_length=200, blank=True, null=True)
+    consumer_key = models.CharField(max_length=100, blank=True, null=True)
+    lis_result_sourcedid = models.TextField(blank=True, null=True)
+    lis_outcome_service_url = models.TextField(blank=True, null=True)
     class Meta:
         unique_together = (('track_id', 'course_id', 'student_id'),)

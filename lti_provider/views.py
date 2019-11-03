@@ -10,6 +10,8 @@ from django.utils.decorators import method_decorator
 from django.views.decorators.csrf import csrf_exempt
 from django.views.generic.base import View, TemplateView
 
+from labs.serializers import SubmittedAssignmentsSerializer
+from labs.views import get_submitted_assignment_if_exists
 from lti_provider.mixins import LTIAuthMixin
 from lti_provider.models import LTICourseContext
 from pylti.common import LTIPostMessageException, post_message
@@ -88,7 +90,11 @@ class LTIRoutingView(LTIAuthMixin, View):
                 request.POST.get('launch_presentation_return_url'))
         elif assignment_name:
             assignments = settings.LTI_TOOL_CONFIGURATION['assignments']
-            url = assignments[assignment_name]
+            url = settings.LTI_TOOL_CONFIGURATION['assignment_url'] + assignment_name
+            if (request.POST.get('context_id', None) and request.POST.get('lis_person_sourcedid', None)):
+                url = url + '/' + request.POST['context_id'].split(':')[-1] + '/' + request.POST['lis_person_sourcedid']
+                submitassignment(assignment_name, request.POST['context_id'].split(':')[-1], request.POST['lis_person_sourcedid'], self.lti.oauth_consumer_key(request), request.POST['lis_result_sourcedid'], request.POST['lis_outcome_service_url'])
+
         elif settings.LTI_TOOL_CONFIGURATION.get('new_tab'):
             url = reverse('lti-landing-page')
         else:
@@ -99,6 +105,25 @@ class LTIRoutingView(LTIAuthMixin, View):
         url = self.add_custom_parameters(url)
         return HttpResponseRedirect(url)
 
+def submitassignment(trackid, courseid, studentid, consumer_key, lis_result_sourcedid, lis_outcome_service_url):
+    data = {
+        'track_id': trackid,
+        'course_id': courseid,
+        'student_id': studentid,
+        'consumer_key': consumer_key,
+        'lis_result_sourcedid': lis_result_sourcedid,
+        'lis_outcome_service_url': lis_outcome_service_url
+    }
+    print(data)
+    submitted_assignemnt = get_submitted_assignment_if_exists(data)
+    if submitted_assignemnt:
+        submitted_assignments_serializer = SubmittedAssignmentsSerializer(submitted_assignemnt, data=data, partial=True)
+    else:
+        submitted_assignments_serializer = SubmittedAssignmentsSerializer(data=data)
+    if submitted_assignments_serializer.is_valid():
+        submitted_assignments_serializer.save()
+    else:
+        print(submitted_assignments_serializer.errors)
 
 class LTILandingPage(LTIAuthMixin, TemplateView):
     template_name = 'lti_provider/landing_page.html'

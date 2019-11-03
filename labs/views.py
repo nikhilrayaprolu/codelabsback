@@ -4,9 +4,12 @@ import io
 import os
 import re
 import shutil
+import time
+from wsgiref.util import FileWrapper
 
 import docker
 from django.forms import model_to_dict
+from django.http import HttpResponse
 from docker import APIClient
 import requests
 
@@ -19,6 +22,7 @@ from gdown import download
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload
+from pylti.common import generate_request_xml, LTIPostMessageException, _post_patched_request, post_message
 from rest_framework import status
 from rest_framework.parsers import FileUploadParser
 from rest_framework.permissions import IsAuthenticated
@@ -43,6 +47,7 @@ SCOPES = ['https://www.googleapis.com/auth/drive.file', 'https://www.googleapis.
 credentials = service_account.Credentials.from_service_account_file(
         SERVICE_ACCOUNT_FILE, scopes=SCOPES)
 service = build('drive', 'v3', credentials=credentials)
+
 
 def randomString(stringLength=10):
     """Generate a random string of fixed length """
@@ -124,6 +129,7 @@ class Copytrack(APIView):
 
     def get(self, request, trackid):
         track = self.get_track_by_id(trackid)
+        previous_track_id = track.id
         track.pk = None
         track.id = None
         track.created_at = None
@@ -136,7 +142,9 @@ class Copytrack(APIView):
         track_serializer = TrackSerializer(data=track_dict, context={'request': request})
         if track_serializer.is_valid():
             track_serializer.save()
+            current_track_id = track_serializer.data['id']
             challenges = self.get_challenges_by_track(trackid)
+
             for challenge in challenges:
                 challenge.pk = None
                 challenge.id = None
@@ -151,6 +159,12 @@ class Copytrack(APIView):
                 else:
                     print(challenge_serializer.errors)
                     return Response({'error': challenge_serializer.errors}, status=500)
+            current_volume_path = os.path.join(os.getcwd(), 'public', str(current_track_id), 'instructor', 'instructor')
+            if not os.path.exists(current_volume_path):
+                volume = os.makedirs(current_volume_path, exist_ok=True)
+            previous_volume = os.path.join(os.getcwd(), 'public', str(previous_track_id), 'instructor', 'instructor')
+            if previous_volume:
+                copy_tree(previous_volume, current_volume_path)
             return Response({'success': True, 'trackid': track_serializer.data['id']}, status=200)
         else:
             print(track_serializer.errors)
@@ -230,6 +244,7 @@ class RunTrack(APIView):
 
     def get(self, request, trackid, courseid=None, studentid=None):
         temp = False
+        submitted = False
         if not courseid:
             courseid = randomString(5)
             temp = True
@@ -248,8 +263,10 @@ class RunTrack(APIView):
         if trackid and courseid and studentid:
             container_data = self.get_container_if_exists(trackid, courseid, studentid)
             print(container_data)
+            print("yes container exists")
             if self.check_if_lab_submitted(trackid, courseid, studentid) == 'submitted':
                 submitted = True
+                print("yes submitted")
             else:
                 submitted = False
         track_details = self.get_track_details(trackid)
@@ -259,7 +276,6 @@ class RunTrack(APIView):
             else:
                 container_data = run_image_from_track_id(trackid, courseid, studentid, temp, instructor_view)
             print("from second line", container_data)
-            submitted = False
         track = self.get_track_by_id(trackid)
         challenges = self.get_challenges_by_track(trackid)
         track_serializer = TrackSerializer(track)
@@ -324,7 +340,7 @@ class SubmitLab(APIView):
         file_location = os.path.join(outputfolder, 'practice.ipynb')
         if not os.path.exists(outputfolder):
             volume = os.makedirs(outputfolder, exist_ok=True)
-        fh = io.BytesIO(file_location, mode='wb')
+        fh = io.FileIO(file_location, mode='wb')
         downloader = MediaIoBaseDownload(fh, request)
         done = False
         while done is False:
@@ -340,10 +356,10 @@ class SubmitLab(APIView):
         }
         submitted_assignemnt = get_submitted_assignment_if_exists(data)
         container_data = self.get_container_data(trackid, courseid, studentid)
-        if container_data and container_data.container_colab_file and not submitted_assignemnt:
+        if container_data and container_data.container_colab_file:
             self.download_colab_locally(container_data.container_colab_file, trackid, courseid, studentid)
         if submitted_assignemnt:
-            submitted_assignments_serializer = SubmittedAssignmentsSerializer(submitted_assignemnt, data=data)
+            submitted_assignments_serializer = SubmittedAssignmentsSerializer(submitted_assignemnt, data=data, partial=True)
         else:
             submitted_assignments_serializer = SubmittedAssignmentsSerializer(data=data)
         if submitted_assignments_serializer.is_valid():
@@ -375,72 +391,73 @@ class NewLab(APIView):
 
     def post(self, request):
         user = request.user
-        newlab = request.data
-        print(newlab)
-        newlab['time_limit'] = str(newlab['timelimit']['hour']) + ':' + str(newlab['timelimit']['minute'])
-        print(newlab)
-        new_topic_serializer = TopicSerializer(data=newlab, context={'request': request})
-        if new_topic_serializer.is_valid():
-            new_topic = new_topic_serializer.save()
-            for track in newlab['tracks']:
-                track['topic'] = new_topic.id
-                new_track_serializer = TrackSerializer(data=track, context={'request': request})
-                if new_track_serializer.is_valid():
-                    new_track = new_track_serializer.save(user_created=self.request.user)
-                    if new_track.labtype == 'colab':
+        track = request.data
+        # print(newlab)
+        # newlab['time_limit'] = str(newlab['timelimit']['hour']) + ':' + str(newlab['timelimit']['minute'])
+        # print(newlab)
+        # new_topic_serializer = TopicSerializer(data=newlab, context={'request': request})
+        # if new_topic_serializer.is_valid():
+        #     new_topic = new_topic_serializer.save()
+        #     for track in newlab['tracks']:
+        #         track['topic'] = new_topic.id
 
-                        downloadid = re.search('[-\w]{25,}', new_track.colablink).group()
-                        # if in future copy doesn't work do this
-                        # url = 'https://drive.google.com/uc?id={id}'.format(id=downloadid)
-                        # outputfolder = os.path.join(os.getcwd(), 'public', str(new_track.id), 'instructor', 'instructor')
-                        # file_location = os.path.join(outputfolder, 'practice.ipynb')
-                        # if not os.path.exists(outputfolder):
-                        #     volume = os.makedirs(outputfolder, exist_ok=True)
-                        #
-                        # output = download(url=url, output=file_location, quiet=False)
-                        # print(output)
-                        # file_metadata = {'name': 'practice.ipynb'}
-                        # media = MediaFileUpload(file_location,
-                        #                         mimetype='application/vnd.google.colaboratory')
-                        # file = service.files().create(body=file_metadata,
-                        #                                     media_body=media,
-                        #                                     fields='id').execute()
-                        # print(file)
-                        # print('File ID: %s' % file.get('id'))
-                        # new_file_id = file.get('id')
+        new_track_serializer = TrackSerializer(data=track, context={'request': request})
+        if new_track_serializer.is_valid():
+            new_track = new_track_serializer.save(user_created=self.request.user)
+            if new_track.labtype == 'colab':
 
-                        copy_file = service.files().copy(fileId=downloadid, supportsAllDrives=True, supportsTeamDrives=True).execute()
-                        print(copy_file)
-                        print('File ID: %s' % copy_file.get('id'))
-                        new_track_model = Track.objects.get(id=new_track.id)
-                        print(new_track_model)
-                        updated_track_serializer = TrackSerializer(new_track_model, data={'uploaded_colab_file_id': copy_file.get('id')}, partial=True)
-                        if updated_track_serializer.is_valid():
-                            print('working')
-                            updated_track = updated_track_serializer.save()
-                            print(updated_track)
-                        else:
-                            print(updated_track_serializer.errors)
-                            return Response({'error': updated_track_serializer.errors}, status=500)
+                downloadid = re.search('[-\w]{25,}', new_track.colablink).group()
+                # if in future copy doesn't work do this
+                # url = 'https://drive.google.com/uc?id={id}'.format(id=downloadid)
+                # outputfolder = os.path.join(os.getcwd(), 'public', str(new_track.id), 'instructor', 'instructor')
+                # file_location = os.path.join(outputfolder, 'practice.ipynb')
+                # if not os.path.exists(outputfolder):
+                #     volume = os.makedirs(outputfolder, exist_ok=True)
+                #
+                # output = download(url=url, output=file_location, quiet=False)
+                # print(output)
+                # file_metadata = {'name': 'practice.ipynb'}
+                # media = MediaFileUpload(file_location,
+                #                         mimetype='application/vnd.google.colaboratory')
+                # file = service.files().create(body=file_metadata,
+                #                                     media_body=media,
+                #                                     fields='id').execute()
+                # print(file)
+                # print('File ID: %s' % file.get('id'))
+                # new_file_id = file.get('id')
 
-
-                    print(new_track, "check")
-                    for challenge in track['challenges']:
-                        challenge['track'] = new_track.id
-                        new_challenge_serializer = ChallengeSerializer(data=challenge, context={'request': request})
-                        if new_challenge_serializer.is_valid():
-                            new_challenge = new_challenge_serializer.save(user_created=self.request.user)
-                            print(new_challenge)
-                        else:
-                            print(new_challenge_serializer.errors)
-                            return Response({'error': new_challenge_serializer.errors}, status=500)
-                    # image, build_output = build_image(track['container'], track['installscript'])
+                copy_file = service.files().copy(fileId=downloadid, supportsAllDrives=True, supportsTeamDrives=True).execute()
+                print(copy_file)
+                print('File ID: %s' % copy_file.get('id'))
+                new_track_model = Track.objects.get(id=new_track.id)
+                print(new_track_model)
+                updated_track_serializer = TrackSerializer(new_track_model, data={'uploaded_colab_file_id': copy_file.get('id')}, partial=True)
+                if updated_track_serializer.is_valid():
+                    print('working')
+                    updated_track = updated_track_serializer.save()
+                    print(updated_track)
                 else:
-                    print(new_track_serializer.errors)
-                    return Response({'error': new_track_serializer.errors}, status=500)
+                    print(updated_track_serializer.errors)
+                    return Response({'error': updated_track_serializer.errors}, status=500)
+
+
+            print(new_track, "check")
+            for challenge in track['challenges']:
+                challenge['track'] = new_track.id
+                new_challenge_serializer = ChallengeSerializer(data=challenge, context={'request': request})
+                if new_challenge_serializer.is_valid():
+                    new_challenge = new_challenge_serializer.save(user_created=self.request.user)
+                    print(new_challenge)
+                else:
+                    print(new_challenge_serializer.errors)
+                    return Response({'error': new_challenge_serializer.errors}, status=500)
+            # image, build_output = build_image(track['container'], track['installscript'])
         else:
-            print(new_topic_serializer.errors)
-            return Response({'error': new_topic_serializer.errors}, status=500)
+            print(new_track_serializer.errors)
+            return Response({'error': new_track_serializer.errors}, status=500)
+        # else:
+        #     print(new_topic_serializer.errors)
+        #     return Response({'error': new_topic_serializer.errors}, status=500)
         return Response({'success': True}, status=200)
 
 
@@ -504,9 +521,9 @@ def run_image_from_track_id(trackid, courseid=None, studentid=None, temp=False, 
         volume_path = os.path.join(os.getcwd(), 'public', str(trackid), str(courseid), str(studentid))
         if not os.path.exists(volume_path):
             volume = os.makedirs(volume_path, exist_ok=True)
-        instructor_volume = os.path.join(os.getcwd(), 'public', str(trackid), 'instructor', 'instructor')
-        if instructor_volume and not (studentid == "instructor") and not (courseid == "instructor"):
-            copy_tree(instructor_volume, volume_path)
+            instructor_volume = os.path.join(os.getcwd(), 'public', str(trackid), 'instructor', 'instructor')
+            if os.path.isdir(instructor_volume) and not (studentid == "instructor") and not (courseid == "instructor"):
+                copy_tree(instructor_volume, volume_path)
         container_run_by_instructor = False
     else:
         volume_path = os.path.join(os.getcwd(), 'public', str(trackid), str(courseid), 'inst-'+str(studentid))
@@ -518,11 +535,16 @@ def run_image_from_track_id(trackid, courseid=None, studentid=None, temp=False, 
         container_run_by_instructor = True
 
     track = Track.objects.get(id=trackid)
-    run_command = "sh -c \"" + track.configscript + " && tail -f /dev/null\""
+    run_command = ''
     print(run_command)
-
+    iframe = False
+    if(track.scenario == 'iframe-editor'):
+        iframe = True
+        run_command = "\"" + track.configscript + "\""
+    else:
+        run_command = "sh -c \"" + track.configscript + "\""
     container, ports = run_lab(track.final_image, run_command, volume_path, str(trackid), str(courseid), str(studentid),
-                               track.scenario_data['port'].split(","))
+                               track.scenario_data['port'].split(","), iframe)
     container_data = {
         'container_id': container.id,
         'course_id': courseid,
@@ -557,9 +579,18 @@ def run_image_from_track_id(trackid, courseid=None, studentid=None, temp=False, 
     return container_data
 
 
-def run_lab(image, run_command, volume, trackid, courseid, studentid, ports=[]):
-    container = client.containers.run(image, run_command, detach=True, network="ceryx",
-                                      volumes={volume: {'bind': '/wide_node/project', 'mode': 'rw'}})
+def run_lab(image, run_command, volume, trackid, courseid, studentid, ports=[], iframe=False):
+    print("I am up here dude too!")
+    if iframe:
+        container = client.containers.run(image, run_command, detach=True, network="ceryx",entrypoint=["/bin/bash", "-c"],
+                                      volumes={volume: {'bind': '/home/project', 'mode': 'rw'}})
+    else:
+        print(image)
+        print(volume)
+        container = client.containers.run(image, run_command, detach=True, network="ceryx",
+                                          volumes={volume: {'bind': '/wide_node/project', 'mode': 'rw'}})
+
+    print("I am up here dude")
     ipaddress = vars(container)["attrs"]["NetworkSettings"]["Networks"]["ceryx"]["IPAddress"]
     while not ipaddress:
         ipaddress = cli.inspect_container(container.id)['NetworkSettings']['Networks']['ceryx']['IPAddress']
@@ -569,7 +600,7 @@ def run_lab(image, run_command, volume, trackid, courseid, studentid, ports=[]):
         data = {"source": str(container.id[:10]) + "-" + str(port) + CONTAINER_HOST, "target": ipaddress + ':' + port}
         headers = {'Content-type': 'application/json'}
         r = requests.post(url=CERYX_API_ENDPOINT, json=data, headers=headers)
-
+        print(r.content, r.status_code)
     return container, ports
 
 
@@ -589,7 +620,24 @@ class SubmissionsGrader(APIView):
 
     def get(self, request, submissionid, grade):
         user = request.user
-        submitted_assignment = SubmittedAssignments.objects.filter(id=submissionid)
+        submitted_assignment = SubmittedAssignments.objects.get(id=submissionid)
+        lis_result_sourcedid = submitted_assignment.lis_result_sourcedid
+        if lis_result_sourcedid:
+            xml = generate_request_xml('{:.0f}'.format(time.time()), 'replaceResult', lis_result_sourcedid, grade)
+            config = getattr(settings, 'PYLTI_CONFIG', dict())
+            consumers = config.get('consumers', dict())
+            print(consumers)
+            print(submitted_assignment.consumer_key)
+            if not post_message(
+                consumers, submitted_assignment.consumer_key,
+                    submitted_assignment.lis_outcome_service_url, xml):
+
+                # Something went wrong, display an error.
+                # Is 500 the right thing to do here?
+                print("Scoring not successful")
+            else:
+                print('Your score was submitted. Great job!')
+
         submitted_assignment_serializer = SubmittedAssignmentsSerializer(submitted_assignment, data={'grade': grade, 'graded': True}, partial = True)
         if submitted_assignment_serializer.is_valid():
             submitted_assignment_serializer.save()
@@ -621,7 +669,7 @@ class EvaluatorCourseStats(APIView):
 
     def get(self, request, courseid):
         user = request.user
-        list_of_tracks = Track.objects.filter(submittedassignments__course_id=courseid, user_created=user)
+        list_of_tracks = Track.objects.filter(submittedassignments__course_id=courseid, user_created=user).distinct()
         number_of_tracks = len(list_of_tracks)
         tracks_serializer = TrackSerializer(list_of_tracks, many=True)
         return Response({'list_of_tracks': tracks_serializer.data, 'number_of_tracks': number_of_tracks}, status=200)
@@ -657,9 +705,9 @@ class StartIframe(APIView):
 
     def get(self, request, containerid, port):
         ipaddress = None
-        while not ipadress:
-            ipadress = cli.inspect_container(containerid)['NetworkSettings']['Networks']['ceryx']['IPAddress']
-        data = {"source": str(containerid[:10]) + "-" + str(port) + CONTAINER_HOST, "target": ipadress + ':' + port}
+        while not ipaddress:
+            ipaddress = cli.inspect_container(containerid)['NetworkSettings']['Networks']['ceryx']['IPAddress']
+        data = {"source": str(containerid[:10]) + "-" + str(port) + CONTAINER_HOST, "target": ipaddress + ':' + str(port)}
         headers = {'Content-type': 'application/json'}
         r = requests.post(url=CERYX_API_ENDPOINT, json=data, headers=headers)
         container_data = self.get_container_if_exists(containerid)
@@ -672,7 +720,7 @@ class StartIframe(APIView):
         else:
             Response({'error': 'container doesn\'t exist'}, status=500)
 
-        return Response({'sucess': True}, status=200)
+        return Response({'success': True}, status=200)
 
 
 import zipfile
@@ -681,11 +729,21 @@ import zipfile
 class FileUploadView(APIView):
     parser_classes = (FileUploadParser,)
 
-    def post(self, request, trackid, filename):
+    def post(self, request, trackid, filename, courseid=None, studentid=None):
         up_file = request.data['file']
-        volume_path = os.path.join(os.getcwd(), 'public', str(trackid), "instructor", "instructor")
+        if courseid and studentid:
+            volume_path = os.path.join(os.getcwd(), 'public', str(trackid), courseid, studentid)
+            print(volume_path)
         if os.path.exists(volume_path):
-            shutil.rmtree(volume_path)
+            for the_file in os.listdir(volume_path):
+                file_path = os.path.join(volume_path, the_file)
+                try:
+                    if os.path.isfile(file_path):
+                        os.unlink(file_path)
+                    elif os.path.isdir(file_path): shutil.rmtree(file_path)
+                except Exception as e:
+                    print(e)
+            # shutil.rmtree(volume_path)
         volume = os.makedirs(volume_path, exist_ok=True)
         file_destination = os.path.join(volume_path, filename)
         print(file_destination)
@@ -696,9 +754,8 @@ class FileUploadView(APIView):
         if (zipfile.is_zipfile(file_destination)):
             with zipfile.ZipFile(file_destination, 'r') as zip_ref:
                 zip_ref.extractall(volume_path)
-        # ...
-        # do some stuff with uploaded file
-        # ...
+        print(file_destination)
+        os.remove(file_destination)
         return Response({'sucess': True}, status.HTTP_201_CREATED)
 
     def delete(self, request, trackid):
@@ -707,3 +764,31 @@ class FileUploadView(APIView):
         volume = os.makedirs(volume_path, exist_ok=True)
 
         return Response({'sucess': True}, status.HTTP_204_NO_CONTENT)
+
+class FileDownload(APIView):
+    def get(self, request, trackid, courseid, studentid):
+        print(os.getcwd())
+        volume_path = os.path.join(os.getcwd(), 'public', str(trackid), courseid, studentid)
+        compressed_path = os.path.join(os.getcwd(), 'public2', str(trackid), courseid, studentid)
+        temporary_zip_location = os.path.join(compressed_path, 'temporary.zip')
+        temporary_zip_name = os.path.join(compressed_path, 'temporary')
+        if os.path.exists(temporary_zip_location):
+            os.remove(temporary_zip_location)
+        volume = os.makedirs(compressed_path, exist_ok=True)
+        shutil.make_archive(temporary_zip_name, 'zip', volume_path)
+        url = os.path.join('media', str(trackid), courseid, studentid, 'temporary.zip')
+        return Response({'sucess': True, 'url': url}, 200)
+
+
+class ResetFolder(APIView):
+    def get(self, request, trackid, courseid, studentid):
+        reset_path = os.path.join(os.getcwd(), 'public', str(trackid), str(courseid), str(studentid))
+        instructor_volume = os.path.join(os.getcwd(), 'public', str(trackid), 'instructor', 'instructor')
+        if os.path.exists(instructor_volume):
+            # if os.path.exists(reset_path):
+            #     shutil.rmtree(reset_path)
+            os.makedirs(reset_path, exist_ok=True)
+            copy_tree(instructor_volume, reset_path)
+            return Response({'sucess': True}, 200)
+        return Response({'sucess': False, 'error': "No instructor volume"}, 400)
+
