@@ -1,6 +1,5 @@
 .idea/
 __pycache__/
-db.sqlite3
 docker-redis-master
 docker_context
 docker_context.tar.gz
